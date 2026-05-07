@@ -31,7 +31,7 @@ async def handler(context):
         logger.error("Missing conversationId")
         return {"status_code": 400, "body": "Missing conversationId"}
 
-    aborted = context.agents.abort_active_run(conversation_id)
+    aborted = context.utils.abort_active_run(conversation_id)
     logger.log("abort_active_run result:", {"aborted": aborted})
 
     return {
