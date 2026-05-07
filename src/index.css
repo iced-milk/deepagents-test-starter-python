@@ -128,6 +128,22 @@ html, body, #root {
 .route-info .method.get { color: var(--green); border: 1px solid rgba(74, 222, 128, 0.3); }
 .route-info .method.post { color: var(--accent); border: 1px solid rgba(108, 140, 255, 0.3); }
 
+.conversation-id {
+  margin-left: 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+  opacity: 0.75;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.conversation-id code {
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  font-size: 11px;
+  user-select: all;
+}
+
 /* ─── Input Area ─── */
 .input-area {
   display: flex;

@@ -81,6 +81,8 @@ def get_model(env: dict[str, str]):
             temperature=0,
             timeout=300,
         )
+    else:
+        logger.log("Model already initialized, reusing")
     return _model
 
 
@@ -97,6 +99,8 @@ def get_agent(model):
                 ModelCallLimitMiddleware(run_limit=30),
             ],
         )
+    else:
+        logger.log("Agent already initialized, reusing")
     return _agent
 
 
@@ -268,6 +272,10 @@ async def _event_stream(agent, user_message: str, utils):
 
 
 async def handler(context):
+    logger.log(
+        "conversationId:", getattr(context, "conversation_id", None),
+        "runId:", getattr(context, "run_id", None),
+    )
     body = context.request.body or {}
     message = body.get("message")
     logger.log("user message:", message)
@@ -286,12 +294,6 @@ async def handler(context):
         return {"status_code": 500, "body": {"error": msg}}
 
     async def gen():
-        # Session frame: emit conversationId first so the client can save it
-        # and later POST it to /stop for precise cancellation.
-        conversation_id = getattr(context, "conversation_id", None)
-        if conversation_id:
-            yield context.utils.sse({"type": "session", "conversationId": conversation_id})
-
         # Race three sources in a single asyncio.wait:
         #   - pending     : next frame from _event_stream
         #   - cancel_task : context.request.signal (set by runtime on /stop)

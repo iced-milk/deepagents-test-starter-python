@@ -16,7 +16,7 @@ const ROUTES: RouteConfig[] = [
     label: '/chat',
     description: '同步聊天 — invoke() 返回完整 JSON 响应',
     type: 'json',
-    defaultMessage: '你好，1+1 等于几？',
+    defaultMessage: '什么是 TypeScript？',
   },
   {
     path: '/stream',
@@ -62,15 +62,12 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const outputRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
-  // 当前活跃请求返回的 conversationId（由后端 runtime 注入）
-  const conversationIdRef = useRef<string | null>(null);
-  // 用户是否贴在底部；只有贴底时新内容才自动滚动，避免用户上翻被强制拉回。
+  // 每个路由一个固定的 conversationId，通过 header `pages-agent-conversation-id` 上报，
+  // 平台据此把同一路由的多次请求路由到同一个 agent 实例。
+  const conversationIdsRef = useRef<Record<string, string>>(
+    Object.fromEntries(ROUTES.map(r => [r.path, crypto.randomUUID()])),
+  );
   const stickToBottomRef = useRef(true);
-  // 标记"这次 scroll 事件是我们自己 scrollTop= 触发的"，
-  // 避免把程序化滚动再反馈回 stickToBottom 判定。
-  // 原因：rAF 里设 scrollTop 之后，浏览器会在稍晚派发一次 scroll 事件；
-  // 若此时 React 又追加了新内容、scrollHeight 变大，distanceFromBottom 会
-  // 被算成 > 阈值，stickToBottom 被误判为 false，之后就再也不自动滚了。
   const isProgrammaticScrollRef = useRef(false);
 
   const route = ROUTES[activeIdx];
@@ -85,10 +82,8 @@ export default function App() {
     });
   }, []);
 
-  // 监听滚动：根据当前位置决定是否继续自动贴底。
-  // 距底 <= 8px 视为贴底（容忍浮点/亚像素误差及不同 DPR 的舍入）。
+  // 监听滚动：根据当前位置决定是否继续自动贴底（距底 <= 8px 视为贴底）。
   const handleOutputScroll = useCallback(() => {
-    // 跳过我们自己发起的滚动，只响应用户的滚轮/拖拽。
     if (isProgrammaticScrollRef.current) {
       isProgrammaticScrollRef.current = false;
       return;
@@ -124,7 +119,7 @@ export default function App() {
   };
 
   const handleStop = useCallback(async () => {
-    const conversationId = conversationIdRef.current;
+    const conversationId = conversationIdsRef.current[route.path];
     if (conversationId) {
       try {
         await fetch('/stop', {
@@ -133,14 +128,12 @@ export default function App() {
           body: JSON.stringify({ conversationId }),
         });
       } catch {
-        // 忽略 stop 请求失败
+        // ignore stop request failure
       }
     }
-    // 前端 abort fetch 连接（断开 SSE 读取 / JSON 等待）
     abortRef.current?.abort();
-    // 显示提示
     appendLine({ kind: 'status', tag: 'STOPPED', tagClass: 'stopped', content: 'Request aborted by user.' });
-  }, [appendLine]);
+  }, [appendLine, route.path]);
 
   const handleClear = () => {
     setLines([]);
@@ -154,19 +147,18 @@ export default function App() {
 
     setLines([]);
     setLoading(true);
-    // 新一轮请求：重置为贴底，恢复自动滚动。
     stickToBottomRef.current = true;
-    // 清空上一轮的 conversationId，避免误用作本轮的 stop 目标。
-    conversationIdRef.current = null;
 
     const controller = new AbortController();
     abortRef.current = controller;
 
+    const conversationId = conversationIdsRef.current[route.path];
+
     try {
       if (route.type === 'json') {
-        await sendJsonRequest(route, message, controller.signal, appendLine);
+        await sendJsonRequest(route, message, conversationId, controller.signal, appendLine);
       } else {
-        await sendSSERequest(route, message, controller.signal, appendLine, appendToLastText, conversationIdRef);
+        await sendSSERequest(route, message, conversationId, controller.signal, appendLine, appendToLastText);
       }
     } catch (err: unknown) {
       if ((err as Error).name !== 'AbortError') {
@@ -231,6 +223,9 @@ export default function App() {
           <span>
             Response
             {loading && <span className="loading-dot" />}
+            <span className="conversation-id" title="该路由的 conversationId（前端生成，整个会话期固定）">
+              conversationId: <code>{conversationIdsRef.current[route.path]}</code>
+            </span>
           </span>
           <button className="btn-clear" onClick={handleClear}>
             Clear
@@ -274,12 +269,16 @@ function renderLine(line: OutputLine) {
 async function sendJsonRequest(
   route: RouteConfig,
   message: string,
+  conversationId: string,
   signal: AbortSignal,
   appendLine: (line: Omit<OutputLine, 'id'>) => void,
 ) {
   const res = await fetch(route.path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'pages-agent-conversation-id': conversationId,
+    },
     body: JSON.stringify({ message }),
     signal,
   });
@@ -292,14 +291,17 @@ async function sendJsonRequest(
 async function sendSSERequest(
   route: RouteConfig,
   message: string,
+  conversationId: string,
   signal: AbortSignal,
   appendLine: (line: Omit<OutputLine, 'id'>) => void,
   appendToLastText: (text: string) => void,
-  conversationIdRef: { current: string | null },
 ) {
   const res = await fetch(route.path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'pages-agent-conversation-id': conversationId,
+    },
     body: JSON.stringify({ message }),
     signal,
   });
@@ -311,8 +313,6 @@ async function sendSSERequest(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  // Track which "source" we're currently appending text to, so that a source_switch
-  // forces a new text line.
   let currentTextSource = '';
 
   while (true) {
@@ -327,7 +327,6 @@ async function sendSSERequest(
       const trimmed = part.trim();
       if (!trimmed) continue;
 
-      // SSE 注释行，按协议忽略，不展示到 UI。
       if (trimmed.startsWith(':')) continue;
 
       const line = trimmed.replace(/^data:\s*/, '');
@@ -349,20 +348,7 @@ async function sendSSERequest(
       const type = event.type as string;
 
       switch (type) {
-        case 'session': {
-          // 会话标识帧：后端在 SSE 首帧下发 {"type":"session","conversationId":"..."}
-          // 供前端保存，点击 Stop 时通过 /stop 接口传回用于精准打断。
-          // 不打印到 UI。
-          const cid = event.conversationId;
-          if (typeof cid === 'string' && cid) {
-            conversationIdRef.current = cid;
-          }
-          break;
-        }
-
         case 'ping': {
-          // 心跳帧：后端每 5s 空闲时发 {"type":"ping","ts":...}，用于保活。
-          // 静默丢弃，不渲染到 UI。
           break;
         }
 

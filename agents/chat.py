@@ -58,6 +58,8 @@ def get_model(env: dict[str, str]):
             temperature=0,
             timeout=300,
         )
+    else:
+        logger.log("Model already initialized, reusing")
     return _model
 
 
@@ -73,10 +75,16 @@ def get_agent(model):
                 ModelCallLimitMiddleware(run_limit=30),
             ],
         )
+    else:
+        logger.log("Agent already initialized, reusing")
     return _agent
 
 
 async def handler(context):
+    logger.log(
+        "conversationId:", getattr(context, "conversation_id", None),
+        "runId:", getattr(context, "run_id", None),
+    )
     body = context.request.body or {}
     message = body.get("message")
     logger.log("user message:", message)
